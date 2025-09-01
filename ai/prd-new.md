@@ -1203,7 +1203,9 @@ else:
 
 #### 功能：智能路由交换
 
-**描述**：通过多个流动性池路由实现最优兑换
+**描述**：通过多个流动性池路由实现最优兑换，支持独立交换和平仓时的自动代币转换
+
+#### 场景1：独立代币交换
 
 **智能路由算法**：
 ```
@@ -1225,6 +1227,98 @@ else:
 
 最大价格影响限制：5%（可通过治理调整）
 ```
+
+#### 场景2：平仓时的自动代币转换
+
+**描述**：用户平仓时可选择将提取的抵押品或盈利自动转换为指定代币
+
+#### 2.1 抵押品转换为盈亏代币 (SwapCollateralTokenToPnlToken)
+
+**使用场景**：用户平仓时希望将提取的抵押品代币转换为盈亏结算代币
+
+**触发条件**：
+```
+订单类型：DecreasePositionSwapType.SwapCollateralTokenToPnlToken
+执行条件：提取金额 > 0 且用户指定了此转换类型
+```
+
+**转换流程**：
+```
+平仓时自动代币转换流程：
+1. 计算用户可提取的抵押品数量
+2. 系统检查用户是否设置了SwapCollateralTokenToPnlToken
+3. 如果设置，将抵押品代币作为输入进行内部交换
+4. 使用市场自身的流动性池完成转换（单一市场路径）
+5. 将转换结果与原有的secondaryOutputAmount合并
+6. 用户最终收到目标盈亏代币而非原始抵押品代币
+```
+
+**转换参数**：
+- **输入代币**：仓位的抵押品代币（collateralToken）
+- **输出代币**：盈亏结算代币（secondaryOutputToken）
+- **转换金额**：提取的抵押品数量（outputAmount）
+- **最小输出保护**：minOutputAmount = 0（系统自动处理）
+- **交换路径**：仅使用当前市场进行转换
+
+#### 2.2 盈利转换为抵押品代币 (SwapPnlTokenToCollateralToken)
+
+**使用场景**：用户平仓获得盈利时，希望将盈利代币转换为抵押品代币
+
+**触发条件**：
+```
+订单类型：DecreasePositionSwapType.SwapPnlTokenToCollateralToken  
+执行条件：盈利金额 > 0 且用户指定了此转换类型
+```
+
+**转换流程**：
+```
+盈利代币转换流程：
+1. 计算仓位平仓后的盈利金额（profitAmount）
+2. 系统检查用户是否设置了SwapPnlTokenToCollateralToken
+3. 如果设置且有盈利，将盈利代币作为输入进行交换
+4. 转换目标为仓位的抵押品代币
+5. 返回是否执行转换和转换后的金额
+6. 用户收到统一的抵押品代币（减少代币种类复杂度）
+```
+
+**转换参数**：
+- **输入代币**：盈利结算代币（pnlToken）
+- **输出代币**：仓位抵押品代币（隐含，在合约内部确定）
+- **转换金额**：实现的盈利金额（profitAmount）
+- **失败处理**：转换失败时保持原有盈利代币，不影响平仓执行
+
+#### 安全机制与容错处理
+
+**交换失败保护**：
+```
+容错设计原则：
+1. 平仓操作的核心功能不因swap失败而失败
+2. swap失败时发出SwapReverted事件记录失败原因
+3. 用户仍然收到原始代币，只是未完成期望的转换
+4. 支持Error和低级别revert两种异常处理
+```
+
+**执行保护机制**：
+- **单一市场路径**：仅在当前仓位市场内进行转换，避免路径复杂性
+- **零滑点保护**：设置minOutputAmount为0，接受市场价格
+- **失败隔离**：swap失败不影响平仓主流程
+- **事件记录**：所有swap操作都有完整的事件日志
+
+**业务规则扩展**：
+- **自动转换**：平仓时可选择的代币转换服务
+- **零额外费用**：使用标准swap费用结构，无额外转换费
+- **即时执行**：作为平仓交易的一部分同步执行
+- **代币统一**：帮助用户减少持有代币种类的复杂度
+
+**合约实现证据**：
+- `contracts/position/DecreasePositionSwapUtils.sol:12-53`: 抵押品转盈亏代币转换`swapWithdrawnCollateralToPnlToken`
+- `contracts/position/DecreasePositionSwapUtils.sol:55-92`: 盈利转抵押品代币转换`swapProfitToCollateralToken`
+- `contracts/position/DecreasePositionSwapUtils.sol:16`: 转换类型检查SwapCollateralTokenToPnlToken
+- `contracts/position/DecreasePositionSwapUtils.sol:61`: 转换类型检查SwapPnlTokenToCollateralToken
+- `contracts/position/DecreasePositionSwapUtils.sol:44-48`: swap失败的Error异常处理
+- `contracts/position/DecreasePositionSwapUtils.sol:83-87`: swap失败的低级别异常处理
+
+#### 场景3：独立代币交换（原有功能）
 
 **业务规则**：
 - 单笔交换最大金额：1000万 USDC 等值
