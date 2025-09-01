@@ -360,22 +360,45 @@
 
 **描述**：GMX Synthetics 采用多层预言机架构，支持多种价格数据源以确保价格准确性和系统安全
 
+**预言机提供者选择逻辑**：
+
+系统根据操作类型和配置自动选择合适的预言机提供者：
+
+#### 常规操作（非原子）使用指定提供者
+```
+提供者选择：dataStore.getAddress(Keys.oracleProviderForTokenKey(token))
+验证逻辑：提供者必须与该代币配置的指定提供者完全匹配
+使用场景：存款、提款、订单执行、清算等所有keeper执行的操作
+```
+
+#### 原子操作使用原子提供者  
+```
+提供者选择：任何标记为原子的提供者（isAtomicOracleProviderKey = true）
+验证逻辑：仅验证提供者是否为原子提供者，不限制具体提供者
+使用场景：即时提款、中继交换、无Gas交易
+安全建议：每个代币建议仅配置一个原子提供者避免价格套利
+```
+
 **预言机架构组成**：
 
 #### 1. GMX 签名者预言机 (GmOracleProvider)
+- **配置角色**：通常作为代币的指定预言机提供者（非原子）
 - **多签名机制**：支持最多15个签名者（MAX_SIGNERS = 256/16-1）
 - **签名验证**：每个价格数据需要最少签名者数量（MIN_ORACLE_SIGNERS）
 - **中位数计算**：从所有签名者价格中取中位数，避免极值影响
 - **价格排序验证**：确保最小价格和最大价格按升序排列
-- **加密签名**：使用区块链和固定salt进行签名验证
+- **时间戳调整**：支持对特定代币设置时间戳调整参数
+- **参考价格验证**：与Chainlink价格进行偏差检查验证
 
-#### 2. Chainlink 价格馈送 (ChainlinkPriceFeedProvider) 
+#### 2. Chainlink 价格馈送 (ChainlinkPriceFeedProvider)
+- **配置角色**：通常配置为原子预言机提供者
 - **链上价格馈送**：直接从Chainlink合约获取价格数据
 - **稳定价格机制**：支持设置稳定价格作为价格边界
-- **参考价格验证**：作为GMX签名者价格的参考验证源
-- **原子操作支持**：可用于原子交换操作的价格源
+- **时间戳特性**：使用当前区块时间戳，无时间戳调整
+- **参考价格跳过**：原子提供者不进行额外参考价格验证
 
 #### 3. Chainlink 数据流 (ChainlinkDataStreamProvider)
+- **配置角色**：可配置为原子预言机提供者
 - **低延迟数据**：支持Chainlink最新数据流技术
 - **买卖价差**：提供bid/ask价格，支持更精确的价格发现
 - **价差缩减**：可配置价差缩减因子减少买卖价差
@@ -409,19 +432,47 @@
 - **安全考虑**：防止价格操纵和MEV攻击
 - **执行流程**：中继服务代付Gas并使用原子价格执行操作
 
-**原子vs非原子操作对比**：
-```
-常规操作（非原子）：
-- 使用场景：存款、订单执行、清算等keeper执行的操作
-- 价格源：使用指定的预言机提供者（通常是GmOracleProvider）
-- 执行模式：两步执行（用户提交 -> keeper执行）
-- 价格验证：严格的多签名者验证和参考价格检查
+**预言机提供者使用策略**：
 
-原子操作：
-- 使用场景：即时提款、中继交换、无Gas交易
-- 价格源：仅使用原子预言机提供者（ChainlinkPriceFeedProvider等）
-- 执行模式：单步执行（用户交易中立即完成）
-- 价格验证：简化验证，依赖Chainlink等可信源
+#### 常规操作（setPrices）
+```
+使用场景：存款、提款、订单执行、清算等所有keeper执行的操作
+提供者选择逻辑：
+  - 使用Keys.oracleProviderForTokenKey(token)获取指定提供者
+  - 必须严格匹配配置的提供者地址
+  - 通常配置为GmOracleProvider（多签名者预言机）
+验证特性：
+  - 完整的参考价格偏差检查
+  - 时间戳调整支持
+  - 严格的多签名者验证
+执行模式：两步执行（用户提交 -> keeper异步执行）
+```
+
+#### 原子操作（setPricesForAtomicAction）
+```  
+使用场景：即时提款、中继交换、无Gas交易
+提供者选择逻辑：
+  - 使用Keys.isAtomicOracleProviderKey(provider)检查
+  - 任何标记为原子的提供者都可使用
+  - 通常配置ChainlinkPriceFeedProvider或ChainlinkDataStreamProvider
+验证特性：
+  - 跳过参考价格验证（避免冗余Chainlink调用）
+  - 使用当前区块时间戳
+  - 简化验证流程以支持即时执行
+执行模式：单步执行（用户交易中立即完成）
+安全考虑：建议每个代币仅配置一个原子提供者防止套利
+```
+
+#### 具体配置示例
+```
+ETH代币配置示例：
+常规操作：Keys.oracleProviderForTokenKey(ETH) = GmOracleProvider地址
+原子操作：Keys.isAtomicOracleProviderKey(ChainlinkProvider) = true
+
+使用决策：
+- 用户通过keeper存款 → 使用GmOracleProvider（多签名验证）
+- 用户即时提款 → 使用ChainlinkPriceFeedProvider（原子执行）
+- 中继交换 → 使用ChainlinkDataStreamProvider（低延迟数据）
 ```
 
 **安全机制**：
@@ -449,14 +500,16 @@ ValidatedPrice {
 - **序列器宽限期**：L2序列器恢复后需等待宽限期才能正常使用
 
 **合约实现证据**：
-- `contracts/oracle/Oracle.sol:103-117`: 主要价格设置函数`setPrices`和`setPricesForAtomicAction`
-- `contracts/oracle/Oracle.sol:73-101`: L2序列器状态验证函数`validateSequencerUp`
-- `contracts/oracle/Oracle.sol:229-326`: 价格验证核心函数`_validatePrices`
+- `contracts/oracle/Oracle.sol:103-109`: 常规操作价格设置函数`setPrices`（forAtomicAction=false）
+- `contracts/oracle/Oracle.sol:111-117`: 原子操作价格设置函数`setPricesForAtomicAction`（forAtomicAction=true）
+- `contracts/oracle/Oracle.sol:271-280`: 原子操作提供者验证逻辑（检查isAtomicProvider）
+- `contracts/oracle/Oracle.sol:275-280`: 非原子操作提供者验证逻辑（检查expectedProvider匹配）
+- `contracts/oracle/Oracle.sol:291-294`: 非原子提供者时间戳调整逻辑
+- `contracts/oracle/Oracle.sol:300-320`: 非原子提供者参考价格验证（原子提供者跳过）
 - `contracts/oracle/Oracle.sol:328-345`: 参考价格偏差验证函数`_validateRefPrice`
-- `contracts/oracle/GmOracleProvider.sol:128-199`: GMX签名者预言机价格获取函数
-- `contracts/oracle/GmOracleProvider.sol:201-234`: 签名者验证和中位数计算
-- `contracts/oracle/ChainlinkPriceFeedProvider.sol:26-60`: Chainlink价格馈送获取
-- `contracts/oracle/ChainlinkDataStreamProvider.sol:49-100`: Chainlink数据流处理
+- `contracts/oracle/GmOracleProvider.sol:128-199`: GMX签名者预言机价格获取和中位数计算
+- `contracts/oracle/ChainlinkPriceFeedProvider.sol:26-60`: Chainlink价格馈送原子提供者实现
+- `contracts/oracle/ChainlinkDataStreamProvider.sol:49-100`: Chainlink数据流原子提供者实现
 
 ### 2.2 流动性供应功能
 
