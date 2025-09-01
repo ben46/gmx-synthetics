@@ -370,12 +370,44 @@
 4. 系统从用户代币中扣除中继费用
 5. 交易立即执行，用户收到确认
 
-**费用结构**：
+**费用结构和收取机制**：
+
+#### Gelato费用计算公式
 ```
-中继费用 = 实际Gas费用 × 1.3倍 + 固定服务费
-支付方式：从用户交易代币中自动扣除
-费用透明度：前端实时显示预估中继费用
+中继费用 = (L1费用 + L2费用) × GELATO_RELAY_FEE_MULTIPLIER_FACTOR
+
+其中：
+L1费用 = Arbitrum L1 gas费用（仅Arbitrum链）
+L2费用 = (基础Gas + calldata Gas + 实际消耗Gas) × gas价格
+基础Gas = 21000 + Gelato合约Gas + 代币转账Gas + 固定开销
 ```
+
+#### 两种费用支付模式
+
+**1. 同步费用支付 (callWithSyncFee)**
+- **费用计算**：Gelato Relay计算实际费用
+- **支付方式**：GMX合约直接向Gelato Relay支付费用
+- **费用去向**：直接支付给Gelato网络
+- **用户体验**：费用金额由Gelato API提供
+
+**2. 赞助调用 (sponsoredCall)**  
+- **费用计算**：GMX合约基于Gas使用量估算费用
+- **支付方式**：费用发送到`RELAY_FEE_ADDRESS`配置地址
+- **费用去向**：
+  1. 收集到中继费用地址（由协议配置）
+  2. 后续用于充值Gelato 1Balance账户
+  3. 最终支付给Gelato网络
+- **费用倍数**：可通过`GELATO_RELAY_FEE_MULTIPLIER_FACTOR`调整（支持协议补贴）
+
+#### 费用分配链条
+```
+用户支付 → RELAY_FEE_ADDRESS → Gelato 1Balance → Gelato网络
+```
+
+**费用透明度**：
+- 前端基于gas limit × gas price × 费用倍数 + 缓冲计算预估费用
+- 实际费用可能低于预估（协议可设置补贴）
+- 剩余费用退还给用户
 
 #### 场景 2：批量订单操作
 
@@ -430,10 +462,13 @@
 **合约实现证据**：
 - `contracts/router/relay/GelatoRelayRouter.sol:27-42`: 主账户批量操作中继
 - `contracts/router/relay/SubaccountGelatoRelayRouter.sol:32-60`: 子账户批量操作中继
-- `contracts/router/relay/BaseGelatoRelayRouter.sol:199-209`: 中继执行前处理，包含原子预言机价格设置
-- `contracts/router/relay/BaseGelatoRelayRouter.sol:74-91`: 签名验证机制
+- `contracts/router/relay/BaseGelatoRelayRouter.sol:270-303`: 中继费用处理函数`_handleRelayFee`
+- `contracts/router/relay/BaseGelatoRelayRouter.sol:325-349`: 中继执行后费用支付`_handleRelayAfterAction`
+- `contracts/gas/GasUtils.sol:559-596`: Gelato中继费用支付函数`payGelatoRelayFee`
+- `contracts/gas/GasUtils.sol:566`: 中继费用地址获取`dataStore.getAddress(Keys.RELAY_FEE_ADDRESS)`
+- `contracts/router/relay/BaseGelatoRelayRouter.sol:305-324`: 两种费用支付模式详细说明
+- `contracts/router/relay/BaseGelatoRelayRouter.sol:74-91`: EIP-712签名验证机制
 - `contracts/pricing/SwapPricingUtils.sol:313-314`: Gelato中继费用交换的特殊处理（orderKey为零）
-- `contracts/pricing/SwapPricingUtils.sol:277-278`: 原子交换费用因子应用于中继交易
 
 ---
 
