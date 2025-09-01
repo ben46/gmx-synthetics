@@ -537,19 +537,39 @@ LP代币新价值 = LP代币旧价值 × (1 + 单位LP收益率)
 - 收益每秒实时累计到 LP 代币价值中
 - **费用收集机制**：通过FeeHandler合约收集各类费用，支持V1和V2版本
 - **费用分配选项**：
-  - 费用买回（buyback）：用户可用GMX或WNT购买累积的费用代币
-  - 费用提取：管理员可将费用提取到指定接收地址
+  - **费用买回（buyback）**：任何用户可主动调用`buyback`函数，用GMX或WNT按预言机价格购买累积的费用代币
+    - 执行者：任何外部用户（非自动化）
+    - 执行条件：需要提供预言机价格参数和最小输出金额
+    - 批次大小：按配置的`batchSize`进行批量买回
+    - 价格保护：支持滑点保护和价格影响限制
+  - **费用提取**：仅限`FeeKeeper`角色可将费用提取到指定接收地址
 - **无自动复投**：当前实现中费用不会自动复投到LP池中，而是通过买回机制或手动提取进行分配
 - 用户可随时查看实时收益情况
 - 提款时按当前LP代币价值计算可提取金额
 
+**买回机制详细流程**：
+```
+用户主动买回流程：
+1. 用户调用buyback(feeToken, buybackToken, minOutputAmount, oracleParams)
+2. 系统验证buybackToken的批次大小和可用费用金额
+3. 根据预言机价格计算最大可买回的feeToken数量
+4. 用户转入batchSize数量的buybackToken
+5. 系统转出相应的feeToken给用户
+6. 更新可提取的buybackToken余额和可用费用金额
+```
+
+**激励机制**：
+- 买回价格基于预言机价格，确保公平性
+- 支持价格影响保护，避免大额买回时的不公平定价
+- 任何用户都可以参与，形成市场化的费用分配机制
+
 **合约实现证据**：
-- `contracts/fee/FeeHandler.sol:54-63`: 费用提取功能`withdrawFees`
-- `contracts/fee/FeeHandler.sol:68-83`: 费用收集功能`claimFees`，支持V1和V2版本
-- `contracts/fee/FeeHandler.sol:89-115`: 费用买回功能`buyback`，用户可用指定代币购买费用
-- `contracts/fee/FeeHandler.sol:197-204`: 费用金额分配逻辑，按GMX和WNT比例分配
-- `contracts/fee/FeeHandler.sol:206-215`: 费用增量处理，相同代币直接增加可提取金额
-- `contracts/pricing/PositionPricingUtils.sol:316-397`: 仓位费用计算函数`getPositionFees`
+- `contracts/fee/FeeHandler.sol:54-63`: 费用提取功能`withdrawFees`，仅限FeeKeeper执行
+- `contracts/fee/FeeHandler.sol:68-83`: 费用收集功能`claimFees`，任何人可调用收集费用
+- `contracts/fee/FeeHandler.sol:89-115`: 费用买回功能`buyback`，任何人可调用进行买回
+- `contracts/fee/FeeHandler.sol:165-190`: 买回执行逻辑`_buybackFees`，处理代币转移和事件发出
+- `contracts/fee/FeeHandler.sol:245-281`: 最大买回金额计算，包含价格影响保护
+- `contracts/fee/FeeHandler.sol:283-285`: 批次大小获取，控制买回规模
 
 ### 2.4 永续合约交易功能
 
