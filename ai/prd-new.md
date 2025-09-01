@@ -568,8 +568,9 @@ LP代币新价值 = LP代币旧价值 × (1 + 单位LP收益率)
 用户累计收益 = 用户LP份额 × (LP代币新价值 - LP代币购买价值)
 ```
 
-**业务规则**：
-- 收益每秒实时累计到 LP 代币价值中
+**LP代币价值动态计算机制**：
+- **非实时累计**：LP代币价值并非每秒主动更新，而是在查询时动态计算
+- **计算触发时机**：每次用户查询LP价值、存取款操作时实时计算当前价值
 - **费用收集机制**：通过FeeHandler合约收集各类费用，支持V1和V2版本
 - **费用分配选项**：
   - **费用买回（buyback）**：任何用户可主动调用`buyback`函数，用GMX或WNT按预言机价格购买累积的费用代币
@@ -598,13 +599,29 @@ LP代币新价值 = LP代币旧价值 × (1 + 单位LP收益率)
 - 支持价格影响保护，避免大额买回时的不公平定价
 - 任何用户都可以参与，形成市场化的费用分配机制
 
+**LP代币价值计算的实际实现**：
+```
+LP代币价值计算流程（查询时动态执行）：
+1. 获取池子基础价值：longTokenUsd + shortTokenUsd
+2. 加上累积的借贷费收入：85%归LP，15%归协议 
+3. 减去交易者未实现盈亏：影响LP价值的关键因素
+4. 减去影响池金额：价格影响缓冲
+5. 计算最终LP代币价值：poolValue / totalSupply
+```
+
+**动态计算优势**：
+- **准确性**：每次计算都基于最新的市场状态和价格
+- **Gas效率**：避免频繁的状态更新，节省链上存储成本  
+- **实时性**：虽然不是每秒更新，但查询时反映最新状态
+
 **合约实现证据**：
+- `contracts/market/MarketUtils.sol:135-165`: 市场代币价格计算`getMarketTokenPrice`
+- `contracts/market/MarketUtils.sol:274-370`: 池子价值信息获取`getPoolValueInfo`
+- `contracts/market/MarketUtils.sol:299-314`: 借贷费收入累计计算
+- `contracts/market/MarketUtils.sol:326-361`: 交易者PnL计算和池价值调整
+- `contracts/market/MarketUtils.sol:2602-2636`: LP代币数量与USD价值互转
 - `contracts/fee/FeeHandler.sol:54-63`: 费用提取功能`withdrawFees`，仅限FeeKeeper执行
 - `contracts/fee/FeeHandler.sol:68-83`: 费用收集功能`claimFees`，任何人可调用收集费用
-- `contracts/fee/FeeHandler.sol:89-115`: 费用买回功能`buyback`，任何人可调用进行买回
-- `contracts/fee/FeeHandler.sol:165-190`: 买回执行逻辑`_buybackFees`，处理代币转移和事件发出
-- `contracts/fee/FeeHandler.sol:245-281`: 最大买回金额计算，包含价格影响保护
-- `contracts/fee/FeeHandler.sol:283-285`: 批次大小获取，控制买回规模
 
 ### 2.4 永续合约交易功能
 
