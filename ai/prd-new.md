@@ -975,40 +975,137 @@ LP代币价值计算流程（查询时动态执行）：
 
 ### 2.7 借贷费功能
 
-#### 功能：持仓借贷费计算
+#### 功能：持仓借贷费计算与分配
 
-**描述**：持有杠杆仓位需要支付借贷费用
+**描述**：持有杠杆仓位需要支付借贷费用，费用在LP和协议间按比例分配
 
-**借贷费计算公式**：
+#### 借贷费率动态计算机制
+
+**基础计算公式**：
 ```
-借贷费率计算：
-基础借贷费率 = 资产利用率 × 利率系数
-资产利用率 = 已借出资产 ÷ 池中总资产
-
-动态调整：
-当利用率 > 80% 时，借贷费率快速上升
-当利用率 < 50% 时，借贷费率保持较低水平
+借贷费率计算流程：
+1. 计算资产利用率 = 已预留资产USD价值 ÷ 池中总资产USD价值
+2. 基础借贷费率 = 利用率 × 借贷因子
+3. 支持Kink模型：利用率超过最优阈值时费率急剧上升
 
 用户借贷费：
-小时借贷费 = 借贷金额 × 年化借贷费率 ÷ (365 × 24)
+每秒借贷费 = 仓位USD规模 × 每秒借贷费率
+累计借贷费 = (当前累积因子 - 开仓累积因子) × 仓位USD规模
 ```
 
-**费用收取机制**：
-- 每小时自动扣除借贷费用
-- 从用户抵押品中直接扣除
-- 85% 分配给LP，15% 归协议
-- 借贷费不足时触发强制平仓
+**Kink利率模型**（当配置了最优利用率因子时）：
+```
+当利用率 ≤ 最优利用率:
+  每秒借贷费率 = 利用率 × 基础借贷因子
+
+当利用率 > 最优利用率:
+  基础费率 = 利用率 × 基础借贷因子
+  额外费率 = (利用率 - 最优利用率) ÷ (1 - 最优利用率) × 超额借贷因子
+  最终费率 = 基础费率 + 额外费率
+```
+
+**小币种保护机制**：
+```
+当配置SKIP_BORROWING_FEE_FOR_SMALLER_SIDE = true时：
+- 如果多头持仓 < 空头持仓，多头不收借贷费
+- 如果空头持仓 < 多头持仓，空头不收借贷费
+- 目的：鼓励市场平衡，减少单边持仓压力
+```
+
+#### 借贷费分配规则
+
+**协议收入分配**：
+```
+总借贷费用分配：
+- LP分成：85%（由borrowingFeePoolFactor = 1 - BORROWING_FEE_RECEIVER_FACTOR决定）
+- 协议收入：15%（由BORROWING_FEE_RECEIVER_FACTOR决定）
+```
+
+**分配计算逻辑**：
+```
+每次更新累积借贷因子时：
+1. 计算时间间隔 = 当前时间 - 上次更新时间  
+2. 期间借贷费率 = getBorrowingFactorPerSecond() × 时间间隔
+3. 累积借贷因子 += 期间借贷费率
+4. LP收益：通过池价值计算时自动包含（getTotalPendingBorrowingFees × 85%）
+5. 协议收入：待实现机制收取剩余15%
+```
+
+**池价值影响机制**：
+```
+LP代币价值计算时：
+poolValue += 待收借贷费总额 × borrowingFeePoolFactor
+
+其中待收借贷费总额 = 所有持仓累积借贷费 - 已实际支付的借贷费
+```
+
+#### 借贷费执行规则
+
+**累积借贷因子更新时机**：
+```
+自动更新触发条件：
+1. 用户开仓/加仓时：调用updateCumulativeBorrowingFactor()
+2. 用户平仓/减仓时：更新累积因子后计算应付借贷费
+3. 仓位被清算时：在清算计算中包含最新借贷费
+4. 定期维护更新：keeper可主动调用更新函数
+```
+
+**借贷费征收流程**：
+```
+仓位操作时的借贷费处理：
+1. 更新市场累积借贷因子到最新值
+2. 计算仓位应付借贷费 = (最新累积因子 - 仓位记录因子) × 仓位规模
+3. 从仓位抵押品中扣除借贷费
+4. 更新仓位的借贷因子记录为最新值
+5. 借贷费直接影响LP池价值（无需单独转账）
+```
+
+**Total Borrowing管理**：
+```
+维护借贷状态一致性：
+totalBorrowing = Σ(每个仓位.借贷因子 × 仓位.USD规模)
+
+仓位变化时更新：
+1. 减去旧仓位贡献：旧规模 × 旧借贷因子  
+2. 加上新仓位贡献：新规模 × 新借贷因子
+3. 确保totalBorrowing与实际仓位状态一致
+```
+
+#### 边界条件处理
+
+**零利用率处理**：
+- 当预留USD为0时，返回借贷费率为0
+- 避免除零错误和不必要的费用征收
+
+**池子价值保护**：
+- 当poolUsd为0时，抛出错误防止异常计算
+- 确保利用率计算的分母有效性
+
+**溢出保护**：
+```
+防止数值溢出的设计：
+- borrowingFactor使用30位小数精度
+- 最大理论值：100% APR × 100年 × 10^30 = 100 × 10^32
+- 安全上限：开放利息 < 115,792,090,000,000 USD
+```
 
 **业务规则**：
-- 年化借贷费率：2%-15%（动态调整）
-- 费用累计频率：每小时
-- 最大借贷利用率：90%
+- **年化借贷费率**：0.1%-50%+（根据利用率动态调整）
+- **费用更新频率**：每次仓位操作时更新，无固定时间间隔
+- **最大借贷利用率**：由reserveFactor和maxReservedUsd控制
+- **分配精度**：支持30位小数精度的费用计算
+- **小币种保护**：支持对持仓较少一方免收借贷费
 
 **合约实现证据**：
-- `contracts/pricing/PositionPricingUtils.sol:399-412`: 借贷费用计算函数`getBorrowingFees`
-- `contracts/pricing/PositionPricingUtils.sol:128-133`: 借贷费用结构体`PositionBorrowingFees`
-- `contracts/pricing/PositionPricingUtils.sol:329`: 从MarketUtils获取借贷费用金额
-- `contracts/pricing/PositionPricingUtils.sol:407-409`: 借贷费用金额和接收者因子计算
+- `contracts/market/MarketUtils.sol:1417-1440`: 更新累积借贷因子`updateCumulativeBorrowingFactor`
+- `contracts/market/MarketUtils.sol:2342-2361`: 获取下一个累积借贷因子`getNextCumulativeBorrowingFactor`  
+- `contracts/market/MarketUtils.sol:2368-2430`: 每秒借贷费率计算`getBorrowingFactorPerSecond`
+- `contracts/market/MarketUtils.sol:2432-2471`: Kink借贷费率模型`getKinkBorrowingFactor`
+- `contracts/market/MarketUtils.sol:2549-2571`: 待收借贷费总额计算`getTotalPendingBorrowingFees`
+- `contracts/market/MarketUtils.sol:1708-1715`: 仓位借贷费计算`getBorrowingFees`
+- `contracts/market/MarketUtils.sol:2289-2309`: 总借贷状态更新`updateTotalBorrowing`
+- `contracts/market/MarketUtils.sol:313-314`: 池价值中借贷费分成计算（BORROWING_FEE_RECEIVER_FACTOR）
+- `contracts/market/MarketUtils.sol:2386-2402`: 小币种借贷费跳过逻辑（SKIP_BORROWING_FEE_FOR_SMALLER_SIDE）
 
 ### 2.8 资金费功能
 
