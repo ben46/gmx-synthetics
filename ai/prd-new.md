@@ -356,34 +356,72 @@
 
 ### 2.1 预言机系统
 
-#### 功能：多重签名价格验证
+#### 功能：多层预言机架构
 
-**描述**：通过多个独立签名者提供可信价格数据
+**描述**：GMX Synthetics 采用多层预言机架构，支持多种价格数据源以确保价格准确性和系统安全
 
-**核心需求**：
-- **多签名者机制**：至少 7/12 签名者提供价格数据
-- **中位数计算**：取签名者价格的中位数，避免极值影响
-- **参考价格验证**：与 Chainlink 等外部价格源比较验证
-- **实时价格更新**：每 1-3 秒更新一次价格数据
+**预言机架构组成**：
 
-**价格验证流程**：
-1. 收集多个签名者的价格数据
-2. 计算最小价格和最大价格的中位数
-3. 与参考价格源进行偏差检查（阈值 2.5%）
-4. 验证区块时间范围和签名有效性
-5. 存储验证后的价格供交易使用
+#### 1. GMX 签名者预言机 (GmOracleProvider)
+- **多签名机制**：支持最多15个签名者（MAX_SIGNERS = 256/16-1）
+- **签名验证**：每个价格数据需要最少签名者数量（MIN_ORACLE_SIGNERS）
+- **中位数计算**：从所有签名者价格中取中位数，避免极值影响
+- **价格排序验证**：确保最小价格和最大价格按升序排列
+- **加密签名**：使用区块链和固定salt进行签名验证
+
+#### 2. Chainlink 价格馈送 (ChainlinkPriceFeedProvider) 
+- **链上价格馈送**：直接从Chainlink合约获取价格数据
+- **稳定价格机制**：支持设置稳定价格作为价格边界
+- **参考价格验证**：作为GMX签名者价格的参考验证源
+- **原子操作支持**：可用于原子交换操作的价格源
+
+#### 3. Chainlink 数据流 (ChainlinkDataStreamProvider)
+- **低延迟数据**：支持Chainlink最新数据流技术
+- **买卖价差**：提供bid/ask价格，支持更精确的价格发现
+- **价差缩减**：可配置价差缩减因子减少买卖价差
+- **数据验证**：通过Chainlink验证器确保数据完整性
+
+**核心价格验证流程**：
+1. **价格提供者验证**：检查价格提供者是否已启用和授权
+2. **价格时效性检查**：验证价格时间戳不超过最大价格有效期（MAX_ORACLE_PRICE_AGE）
+3. **参考价格偏差验证**：与Chainlink参考价格比较，偏差不得超过阈值
+4. **原子操作区分**：原子操作使用原子预言机提供者，常规操作使用指定提供者
+5. **时间戳范围验证**：确保所有价格时间戳在允许范围内（MAX_ORACLE_TIMESTAMP_RANGE）
+6. **L2序列器状态检查**：验证Layer2序列器正常运行且度过宽限期
+
+**安全机制**：
+- **序列器监控**：监控L2序列器状态，序列器宕机后需等待宽限期
+- **价格重复设置保护**：防止同一代币价格被重复设置
+- **时间戳调整**：支持对特定提供者和代币的时间戳进行调整
+- **紧急清除**：支持清除所有已设置的价格数据
+
+**价格数据结构**：
+```
+ValidatedPrice {
+    address token;        // 代币地址
+    uint256 min;         // 最小价格（买入价）
+    uint256 max;         // 最大价格（卖出价）  
+    uint256 timestamp;   // 价格时间戳
+    address provider;    // 价格提供者地址
+}
+```
 
 **业务规则**：
-- 价格偏差超过阈值时拒绝执行
-- 价格数据有效期：最多 5 个区块
-- 签名者轮换机制确保去中心化
-- 紧急情况下可暂停特定签名者
+- **最小签名者要求**：GMX签名者预言机需要满足最小签名者数量要求
+- **价格有效期**：价格数据超过最大有效期后不可使用
+- **参考价格偏差限制**：与Chainlink参考价格偏差不得超过配置阈值
+- **原子/非原子区分**：不同操作类型使用不同类型的预言机提供者
+- **序列器宽限期**：L2序列器恢复后需等待宽限期才能正常使用
 
 **合约实现证据**：
-- `contracts/oracle/Oracle.sol`: 主要的预言机合约，处理价格设置和验证
-- `contracts/oracle/OracleUtils.sol:19-26`: ValidatedPrice结构体定义，包含token、price、timestamp、provider
-- `contracts/oracle/OracleUtils.sol:54-64`: 时间戳错误检查函数`isOracleTimestampError`
-- `contracts/oracle/OracleUtils.sol:34-44`: 预言机错误识别函数`isOracleError`
+- `contracts/oracle/Oracle.sol:103-117`: 主要价格设置函数`setPrices`和`setPricesForAtomicAction`
+- `contracts/oracle/Oracle.sol:73-101`: L2序列器状态验证函数`validateSequencerUp`
+- `contracts/oracle/Oracle.sol:229-326`: 价格验证核心函数`_validatePrices`
+- `contracts/oracle/Oracle.sol:328-345`: 参考价格偏差验证函数`_validateRefPrice`
+- `contracts/oracle/GmOracleProvider.sol:128-199`: GMX签名者预言机价格获取函数
+- `contracts/oracle/GmOracleProvider.sol:201-234`: 签名者验证和中位数计算
+- `contracts/oracle/ChainlinkPriceFeedProvider.sol:26-60`: Chainlink价格馈送获取
+- `contracts/oracle/ChainlinkDataStreamProvider.sol:49-100`: Chainlink数据流处理
 
 ### 2.2 流动性供应功能
 
@@ -497,15 +535,21 @@ LP代币新价值 = LP代币旧价值 × (1 + 单位LP收益率)
 
 **业务规则**：
 - 收益每秒实时累计到 LP 代币价值中
-- 收益自动复投，无需额外操作
+- **费用收集机制**：通过FeeHandler合约收集各类费用，支持V1和V2版本
+- **费用分配选项**：
+  - 费用买回（buyback）：用户可用GMX或WNT购买累积的费用代币
+  - 费用提取：管理员可将费用提取到指定接收地址
+- **无自动复投**：当前实现中费用不会自动复投到LP池中，而是通过买回机制或手动提取进行分配
 - 用户可随时查看实时收益情况
 - 提款时按当前LP代币价值计算可提取金额
 
 **合约实现证据**：
-- `contracts/market/MarketUtils.sol`: 市场工具库，包含收益计算相关函数
-- `contracts/fee/FeeBatch.sol:8-13`: 费用批次结构体定义，包含fee tokens和amounts
+- `contracts/fee/FeeHandler.sol:54-63`: 费用提取功能`withdrawFees`
+- `contracts/fee/FeeHandler.sol:68-83`: 费用收集功能`claimFees`，支持V1和V2版本
+- `contracts/fee/FeeHandler.sol:89-115`: 费用买回功能`buyback`，用户可用指定代币购买费用
+- `contracts/fee/FeeHandler.sol:197-204`: 费用金额分配逻辑，按GMX和WNT比例分配
+- `contracts/fee/FeeHandler.sol:206-215`: 费用增量处理，相同代币直接增加可提取金额
 - `contracts/pricing/PositionPricingUtils.sol:316-397`: 仓位费用计算函数`getPositionFees`
-- `contracts/pricing/PositionPricingUtils.sol:88-96`: 费用分配结构体定义
 
 ### 2.4 永续合约交易功能
 
