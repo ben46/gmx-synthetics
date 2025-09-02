@@ -184,7 +184,7 @@ flowchart TD
 
 ```mermaid
 graph TB
-    subgraph Fee Sources
+    subgraph FeeSources[Fee Sources]
         PositionFee[Position Fees]
         SwapFee[Swap Fees]
         BorrowingFee[Borrowing Fees]
@@ -192,17 +192,17 @@ graph TB
         LiquidationFee[Liquidation Fees]
     end
     
-    subgraph Fee Collection
+    subgraph FeeCollection[Fee Collection]
         FeeHandler
         FeeUtils
         FeeBatch[Fee Batch System]
     end
     
-    subgraph Distribution
-        LPDistribution[LP Distribution 85%]
-        ProtocolRevenue[Protocol Revenue 15%]
-        InsuranceFund[Insurance Fund]
-        ReferralRewards[Referral Rewards]
+    subgraph Distribution[Distribution]
+        LPDistribution[LP-Distribution-85-percent]
+        ProtocolRevenue[Protocol-Revenue-15-percent]
+        InsuranceFund[Insurance-Fund]
+        ReferralRewards[Referral-Rewards]
     end
     
     Fee Sources --> Fee Collection

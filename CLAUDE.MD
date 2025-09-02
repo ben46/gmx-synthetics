@@ -1,1 +1,1 @@
-写mermaid的时候, 不要使用括号,反斜杠, node name不要使用空格, 避免版本问题造成的语法错误.
+写mermaid的时候, 不要使用括号,反斜杠, node name不要使用空格, 避免版本问题造成的语法错误. Mermaid version 10.9.1
